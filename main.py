@@ -1,7 +1,9 @@
 import os
+import json
 import traceback
 import logfire
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Literal
@@ -33,31 +35,24 @@ class ChatRequest(BaseModel):
     history: Optional[List[ModelMessage]] = []
 
 
-class ChatResponse(BaseModel):
-    reply: str
-    new_history: List[ModelMessage]
-
-
-# 5. The Chat Endpoint
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
-    try:
-        # Run the agent with history
-        result = await agent.run(
-            request.message,
-            message_history=request.history
-        )
-        # breakpoint()
+    async def stream_generator():
+        try:
+            # Run the agent with history
+            async with agent.run_stream(request.message, message_history=request.history) as result:
+                async for text in result.stream_text(debounce_by=0.01):
+                    yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
 
-        # Return the response + the updated history (so the frontend can send it back next time)
-        return ChatResponse(
-            reply=result.output,
-            new_history=result.all_messages()
-        )
-    except Exception as e:
-        logfire.error(f"Agent error: {e}")
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=str(e))
+            final_history = result.all_messages()
+
+            history_json = [m.model_dump() for m in final_history]
+            yield f"data: {json.dumps({'type': 'history', 'content': history_json})}\n\n"
+
+        except Exception as e:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
+
+    return StreamingResponse(stream_generator(), media_type="text/event-stream")
 
 
 if __name__ == "__main__":
