@@ -1,0 +1,8 @@
+fastapi
+httpx
+uvicorn
+pydantic
+pandas
+logfire
+pydantic-ai
+bs4
