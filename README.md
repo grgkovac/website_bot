@@ -75,6 +75,11 @@ Store Gemini API Key
 echo -n "YOUR_API_KEY" | gcloud secrets create GOOGLE_API_KEY --data-file=-
 ```
 
+Store OpenAI API Key
+```
+echo -n "YOUR_API_KEY" | gcloud secrets create OPENAI_API_KEY --data-file=-
+```
+
 Store Logfire Token
 ```
 echo -n "YOUR_LOGFIRE_TOKEN" | gcloud secrets create LOGFIRE_TOKEN --data-file=-
@@ -83,6 +88,10 @@ echo -n "YOUR_LOGFIRE_TOKEN" | gcloud secrets create LOGFIRE_TOKEN --data-file=-
 Grant Permission: Allow the Cloud Run Service Account to read these secrets:
 ```commandline
 gcloud secrets add-iam-policy-binding GOOGLE_API_KEY \
+    --member="<your-service-account>" \
+    --role="roles/secretmanager.secretAccessor"
+
+gcloud secrets add-iam-policy-binding OPENAI_API_KEY \
     --member="<your-service-account>" \
     --role="roles/secretmanager.secretAccessor"
 
@@ -98,7 +107,7 @@ gcloud run deploy websitebotapi \
   --project <your-project-id> \
   --region <your-region> \
   --allow-unauthenticated \
-  --set-secrets="GOOGLE_API_KEY=GOOGLE_API_KEY:latest,LOGFIRE_TOKEN=LOGFIRE_TOKEN:latest"
+  --set-secrets="GOOGLE_API_KEY=GOOGLE_API_KEY:latest,LOGFIRE_TOKEN=LOGFIRE_TOKEN:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest"
 ```
 
 You can now access the deployed service.
