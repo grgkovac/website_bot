@@ -6,3 +6,4 @@ pandas
 logfire
 pydantic-ai
 bs4
+tabulate
