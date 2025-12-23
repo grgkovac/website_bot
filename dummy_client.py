@@ -20,6 +20,7 @@ async def test_chat():
         }
         print("Agent: ", end="", flush=True)
 
+        full_response = ""  # Track full text to update history later
         async with httpx.AsyncClient() as client:
             try:
                 async with client.stream("POST", url, json=payload, timeout=60.0) as response:
@@ -28,14 +29,20 @@ async def test_chat():
                             data = json.loads(line[6:])
 
                         if data['type'] == 'text':
-                            # print only the delta or the new full content depending on library version
-                            print(data['content'], end="", flush=True)
+                                # Since backend sends snapshots, calculate the new part to print
+                                new_text = data['content']
+                                # Only print the characters that weren't in full_response yet
+                                print(new_text[len(full_response):], end="", flush=True)
+                                full_response = new_text
 
-                        if data['type'] == 'history':
-                            history = data['content']
+                        elif data['type'] == 'error':
+                            print(f"\n[Error]: {data['content']}")
 
-                            if data['type'] == 'error':
-                                print(f"\n[Error]: {data['content']}")
+                # Update history manually with simple dicts after the stream finishes
+                # This matches the 'flexible history' logic now in your main.py
+                history.append({"role": "user", "content": user_input})
+                history.append({"role": "model", "content": full_response})
+
             except Exception as e:
                 print(f"\n[Connection Error]: {e}")
 

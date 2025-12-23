@@ -7,7 +7,7 @@ from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional, Literal
-from pydantic_ai.messages import ModelMessage
+from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart, TextPart
 
 # 1. Setup Logfire (Make sure you've run 'logfire auth' in your terminal)
 logfire.configure()
@@ -32,22 +32,32 @@ app.add_middleware(
 # 4. Request/Response Models
 class ChatRequest(BaseModel):
     message: str
-    history: Optional[List[ModelMessage]] = []
+    # Change type to List[dict] to accept simple JSON from the browser
+    history: Optional[List[dict]] = []
 
+# Minimal helper to convert simple JS dicts to Pydantic AI objects
+def format_history(history_data: List[dict]) -> List[ModelMessage]:
+    formatted = []
+    for msg in history_data:
+        role = msg.get('role')
+        content = msg.get('content')
+        if role == 'user':
+            formatted.append(ModelRequest(parts=[UserPromptPart(content=content)]))
+        elif role == 'model':
+            formatted.append(ModelResponse(parts=[TextPart(content=content)]))
+    return formatted
 
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
     async def stream_generator():
         try:
+            # Convert the raw dicts into the objects the agent expects
+            message_history = format_history(request.history)
+
             # Run the agent with history
-            async with agent.run_stream(request.message, message_history=request.history) as result:
+            async with agent.run_stream(request.message, message_history=message_history) as result:
                 async for text in result.stream_text(debounce_by=0.01):
                     yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
-
-            final_history = result.all_messages()
-
-            history_json = [m.model_dump() for m in final_history]
-            yield f"data: {json.dumps({'type': 'history', 'content': history_json})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'content': str(e)})}\n\n"
