@@ -8,7 +8,8 @@ from pydantic_ai import Agent, DocumentUrl
 # from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
 
 agent = Agent(
-    'google-gla:gemini-3-flash-preview',
+    # 'google-gla:gemini-3-flash-preview',
+    'openai-responses:gpt-5-nano',
     system_prompt=(
         "You are an assistant on a researchers website. "
         "Your task is to answer questions related to research done by Grgur Kovac (Flowers Team)."
