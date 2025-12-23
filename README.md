@@ -57,3 +57,50 @@ Response:
   "new_history": []
 }
 ```
+
+
+# Deploy with Google Cloud Run
+
+Google cloud
+
+Project setup:
+```commandline
+gcloud auth login
+gcloud config set project <your-project-id>
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com secretmanager.googleapis.com
+```
+
+Store Gemini API Key
+```
+echo -n "YOUR_API_KEY" | gcloud secrets create GOOGLE_API_KEY --data-file=-
+```
+
+Store Logfire Token
+```
+echo -n "YOUR_LOGFIRE_TOKEN" | gcloud secrets create LOGFIRE_TOKEN --data-file=-
+```
+
+Grant Permission: Allow the Cloud Run Service Account to read these secrets:
+```commandline
+gcloud secrets add-iam-policy-binding GOOGLE_API_KEY \
+    --member="<your-service-account>" \
+    --role="roles/secretmanager.secretAccessor"
+
+gcloud secrets add-iam-policy-binding LOGFIRE_TOKEN \
+    --member="<your-service-account>" \
+    --role="roles/secretmanager.secretAccessor"
+```
+
+Deploy to Cloud Run:
+```
+gcloud run deploy websitebotapi \
+  --source . \
+  --project <your-project-id> \
+  --region <your-region> \
+  --allow-unauthenticated \
+  --set-secrets="GOOGLE_API_KEY=GOOGLE_API_KEY:latest,LOGFIRE_TOKEN=LOGFIRE_TOKEN:latest"
+```
+
+You can now access the deployed service.
+To test change the `url` in the `dummy_client.py` to the Cloud Run service URL and run:
+```python dummy_client.py```
