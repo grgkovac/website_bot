@@ -2,6 +2,7 @@ import os
 import json
 import logfire
 import httpx
+import openai
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,14 +30,9 @@ app.add_middleware(
 )
 
 # OpenAI Moderation Configuration
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY', '')
 MODERATION_ENABLED = os.getenv('MODERATION_ENABLED', 'true').lower() == 'true'
-MODERATE_INPUT = os.getenv('MODERATE_INPUT', 'true').lower() == 'true'
-MODERATE_OUTPUT = os.getenv('MODERATE_OUTPUT', 'true').lower() == 'true'
-MODERATION_ACTION = os.getenv('MODERATION_ACTION', 'block').lower()  # block | warn | log
 
-
-async def check_openai_moderation(text: str) -> Dict[str, Any]:
+def check_openai_moderation(text: str) -> Dict[str, Any]:
     """
     Call OpenAI's Moderation API to check if text violates content policy.
 
@@ -46,41 +42,40 @@ async def check_openai_moderation(text: str) -> Dict[str, Any]:
       - category_scores: dict of scores per category
       - error: optional error message
     """
-    if not MODERATION_ENABLED or not OPENAI_API_KEY:
+    if not MODERATION_ENABLED:
         return {'flagged': False, 'categories': {}, 'category_scores': {}}
 
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                'https://api.openai.com/v1/moderations',
-                headers={
-                    'Authorization': f'Bearer {OPENAI_API_KEY}',
-                    'Content-Type': 'application/json',
-                },
-                json={'input': text}
-            )
-            response.raise_for_status()
-            data = response.json()
+        from openai import OpenAI
+        client = OpenAI()
+        response = client.moderations.create(input=text, timeout=10.0)
+        if response and response.results:
+            result = response.results[0]
 
-            if data.get('results'):
-                result = data['results'][0]
-                return {
-                    'flagged': result.get('flagged', False),
-                    'categories': result.get('categories', {}),
-                    'category_scores': result.get('category_scores', {}),
+            if result.flagged:
+                flagged_cats = get_flagged_categories(result.categories)
+                msg = {
+                    "type": "text",
+                    "content": f"I'm sorry, I cannot reply to that. (Content flagged for: {', '.join(flagged_cats)})"
                 }
 
-            return {'flagged': False, 'categories': {}, 'category_scores': {}}
+            return {
+                'flagged': result.flagged,
+                'categories': dict(result.categories),
+                'category_scores': dict(result.category_scores),
+                'msg': msg if result.flagged else None
+            }
+
+        return {'flagged': False, 'categories': {}, 'category_scores': {}, 'msg': None}
 
     except Exception as e:
         logfire.error(f"Moderation API error: {str(e)}")
         return {'flagged': False, 'categories': {}, 'category_scores': {}, 'error': str(e)}
 
 
-def get_flagged_categories(moderation_result: Dict[str, Any]) -> List[str]:
+def get_flagged_categories(categories: openai.types.moderation.Categories) -> List[str]:
     """Extract list of flagged category names from moderation result."""
-    categories = moderation_result.get('categories', {})
-    return [cat for cat, flagged in categories.items() if flagged]
+    return [cat for cat, flagged in categories if flagged]
 
 
 # 4. Request/Response Models
@@ -104,19 +99,13 @@ def format_history(history_data: List[dict]) -> List[ModelMessage]:
 @app.post("/chat")
 async def chat_endpoint(request: ChatRequest):
     # Moderate user input first
-    if MODERATE_INPUT and MODERATION_ENABLED:
-        input_moderation = await check_openai_moderation(request.message)
+    if MODERATION_ENABLED:
+        input_moderation = check_openai_moderation(request.message)
 
         if input_moderation.get('flagged'):
-            flagged_cats = get_flagged_categories(input_moderation)
-            logfire.warn(f"User input flagged for: {', '.join(flagged_cats)}")
-
-            if MODERATION_ACTION == 'block':
-                # Return polite message via streaming instead of HTTPException
-                async def blocked_response():
-                    msg = {"type": "text", "content": "I'm sorry, I cannot reply to that."}
-                    yield f"data: {json.dumps(msg)}\n\n"
-                return StreamingResponse(blocked_response(), media_type="text/event-stream")
+            async def blocked_response():
+                yield f"data: {json.dumps(input_moderation['msg'])}\n\n"
+            return StreamingResponse(blocked_response(), media_type="text/event-stream")
 
     async def stream_generator():
         try:
@@ -129,40 +118,26 @@ async def chat_endpoint(request: ChatRequest):
 
                 async for text in result.stream_text(debounce_by=0.01):
                     # Accumulate text for moderation check
-                    if MODERATE_OUTPUT and MODERATION_ENABLED:
+                    if MODERATION_ENABLED:
                         accumulated_text = text
 
                         # Periodically check accumulated output (every ~500 chars to balance performance)
                         if len(accumulated_text) % 500 < 50:  # Check roughly every 500 chars
-                            output_moderation = await check_openai_moderation(accumulated_text)
+                            output_moderation = check_openai_moderation(accumulated_text)
 
                             if output_moderation.get('flagged'):
-                                flagged_cats = get_flagged_categories(output_moderation)
-                                logfire.warn(f"Agent output flagged for: {', '.join(flagged_cats)}")
-
-                                if MODERATION_ACTION == 'block':
-                                    msg = {"type": "text", "content": "I'm sorry, I cannot reply to that."}
-                                    yield f"data: {json.dumps(msg)}\n\n"
-                                    return
-                                elif MODERATION_ACTION == 'warn':
-                                    warning_msg = f"Content warning: {', '.join(flagged_cats)}"
-                                    msg = {"type": "warning", "content": warning_msg}
-                                    yield f"data: {json.dumps(msg)}\n\n"
+                                yield f"data: {json.dumps(output_moderation['msg'])}\n\n"
+                                return
 
                     yield f"data: {json.dumps({'type': 'text', 'content': text})}\n\n"
 
                 # Final moderation check on complete output
-                if MODERATE_OUTPUT and MODERATION_ENABLED and accumulated_text:
-                    final_moderation = await check_openai_moderation(accumulated_text)
+                if MODERATION_ENABLED and accumulated_text:
+                    final_moderation = check_openai_moderation(accumulated_text)
 
                     if final_moderation.get('flagged'):
-                        flagged_cats = get_flagged_categories(final_moderation)
-                        logfire.warn(f"Final agent output flagged for: {', '.join(flagged_cats)}")
-
-                        if MODERATION_ACTION == 'warn':
-                            warning_msg = f"Content completed with warnings: {', '.join(flagged_cats)}"
-                            msg = {"type": "warning", "content": warning_msg}
-                            yield f"data: {json.dumps(msg)}\n\n"
+                        yield f"data: {json.dumps(output_moderation['msg'])}\n\n"
+                        return
 
         except Exception as e:
             logfire.error(f"Chat endpoint error: {str(e)}")
